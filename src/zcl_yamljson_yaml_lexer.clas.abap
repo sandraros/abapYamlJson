@@ -6,6 +6,7 @@ CLASS zcl_yamljson_yaml_lexer DEFINITION
     TYPES:
       BEGIN OF ENUM enum_token_type STRUCTURE token_type,
         undefined,
+        object_property_name,
         object_start,
         object_end,
         array_start,
@@ -106,19 +107,19 @@ CLASS zcl_yamljson_yaml_lexer DEFINITION
 
     METHODS get_next_array
       IMPORTING start_column_number TYPE i
-                 lines              TYPE string_table
+                !lines              TYPE string_table
                 array               TYPE REF TO zcl_yamljson_array
       CHANGING  current_line_number TYPE i.
 
     METHODS get_next_object
       IMPORTING start_column_number TYPE i
-                 lines              TYPE string_table
-                 object             TYPE REF TO zcl_yamljson_object
+                !lines              TYPE string_table
+                !object             TYPE REF TO zcl_yamljson_object
       CHANGING  current_line_number TYPE i.
 
     METHODS get_next_value
       IMPORTING start_column_number  TYPE i
-                 lines               TYPE string_table
+                !lines               TYPE string_table
       CHANGING  current_line_number  TYPE i
       RETURNING VALUE(current_value) TYPE REF TO zif_yamljson_value.
 
@@ -157,23 +158,24 @@ CLASS zcl_yamljson_yaml_lexer IMPLEMENTATION.
                                   level = level + 1 ).
 
     IF offset >= yaml_length.
-      " end of yaml, all objects and arrays must have been closed
-      RAISE EXCEPTION TYPE zcx_yamljson.
+      RAISE EXCEPTION TYPE zcx_yamljson
+        EXPORTING text = 'End of YAML, no more token'.
     ENDIF.
 
     DATA(new_level) = space.
-    DATA(remaining_length) = yaml_length.
+*    DATA(remaining_length) = yaml_length.
     DATA(exit) = abap_false.
 
     WHILE     exit   = abap_false
           AND offset < yaml_length.
 
-      " skip leading spaces (hex 20)
-      FIND REGEX '^[ ]*' IN SECTION OFFSET offset OF yaml MATCH LENGTH DATA(number_of_leading_spaces) ##REGEX_POSIX.
-      ASSERT sy-subrc = 0.
+      " Skip spaces (if any)
+      offset = find_any_not_of( val = yaml
+                                off = offset
+                                sub = ` ` ).
 
-      remaining_length = strlen( yaml ) - offset.
-      offset = offset + number_of_leading_spaces.
+      DATA(remaining_length) = strlen( yaml ) - offset.
+      " offset = offset + number_of_leading_spaces.
 
       CASE state.
 
@@ -230,52 +232,87 @@ CLASS zcl_yamljson_yaml_lexer IMPLEMENTATION.
                  IN SECTION OFFSET offset OF yaml
                  MATCH LENGTH DATA(match_length).
             IF sy-subrc <> 0.
-              " Not a valid number
-              RAISE EXCEPTION TYPE zcx_yamljson.
+              RAISE EXCEPTION TYPE zcx_yamljson
+                EXPORTING text  = `'&1' is not a valid number`
+                          msgv1 = substring( val = yaml
+                                             off = offset ).
             ENDIF.
+
             token-type  = token_type-number.
             token-value = yaml+offset(match_length).
+
             offset = offset + match_length.
             state = states-after_value.
 
-          ELSEIF    (     remaining_length >= 2
-                      AND yaml+offset(2)    = `- ` )
-                 OR yaml+offset(1) = '{'.
-            "=========
-            " OBJECT
-            "=========
-            token-type = token_type-object_start.
-            offset = offset + 1.
-            new_level = '{'.
-            state = states-object_start.
-
-          ELSEIF    (     remaining_length >= 2
-                      AND yaml+offset(2)    = `- ` )
-                 OR yaml+offset(1) = '['.
-            "=========
-            " ARRAY
-            "=========
-            token-type = token_type-array_start.
-            offset = offset + 1.
-            new_level = '['.
-            state = states-array_start.
-
-          ELSEIF yaml+offset(1) = '"'.
-            "=========
-            " STRING inside double quotes
-            "=========
-            token-type  = token_type-string.
-            token-value = get_string_inside_double_quote( ).
-            state = states-after_value.
-
           ELSE.
-            "=========
-            " Non-quoted STRING
-            "=========
-            token-type  = token_type-string.
-            token-value = get_non_quoted_string( ).
-            offset = offset + strlen( token-value ).
-            state = states-after_value.
+
+            " Skip spaces (if any)
+            offset = find_any_not_of( val = yaml
+                                      off = offset
+                                      sub = ` ` ).
+
+            FIND REGEX '' ##REGEX_POSIX
+*                 & '[ ]*'
+                 & '('
+                 &     '[^":][^ :]+'         " Starts with any character but " or :
+                 &     '|'                   " or
+                 &     '"(?:(?=[^"]|"").*)"' " starts with " followed by any sequence of characters ("" means ") and ends with single "
+                 &     '[ ]*'                " optional spaces
+                 & ')'
+                 & ':'                       " colon
+                 & '[ ]+'                    " optional spaces
+                 & '('
+                 &     '[^"].*'
+                 &     '|'
+                 &     '"(?:(?=[^"]|"").*)"'
+                 &     '[ ]*'
+                 & ')'
+                 & '$'
+                 IN SECTION
+                 OFFSET offset
+                 OF yaml
+                 SUBMATCHES
+                 DATA(property_name) ##NEEDED
+                 DATA(property_value).
+            IF     remaining_length >= 2
+               AND yaml+offset(2)    = `- `.
+*                 OR yaml+offset(1) = '{'
+              "=========
+              " OBJECT
+              "=========
+              token-type = token_type-object_start.
+              offset = offset + 1.
+              new_level = '{'.
+              state = states-object_start.
+
+            ELSEIF    (     remaining_length >= 2
+                        AND yaml+offset(2)    = `- ` )
+                   OR yaml+offset(1) = '['.
+              "=========
+              " ARRAY
+              "=========
+              token-type = token_type-array_start.
+              offset = offset + 1.
+              new_level = '['.
+              state = states-array_start.
+
+            ELSEIF yaml+offset(1) = '"'.
+              "=========
+              " STRING inside double quotes
+              "=========
+              token-type  = token_type-string.
+              token-value = get_string_inside_double_quote( ).
+              state = states-after_value.
+
+            ELSE.
+              "=========
+              " Non-quoted STRING
+              "=========
+              token-type  = token_type-string.
+              token-value = get_non_quoted_string( ).
+              offset = offset + strlen( token-value ).
+              state = states-after_value.
+            ENDIF.
           ENDIF.
 
 *          IF level > -1 AND levels+level(1) = '['.
@@ -423,18 +460,20 @@ CLASS zcl_yamljson_yaml_lexer IMPLEMENTATION.
   METHOD get_non_quoted_string.
     FIND REGEX '' ##REGEX_POSIX     " dummy empty literal for defining all RegEx parts the same way in the next lines
          & '^'                      " start of yaml+offset
-         & '(.+)'                   " all characters (till the end of line or end of yaml string)
+         & ' *'                     " skip spaces (if any)
+         & '([^ ].*)'               " all characters (till the end of line or end of yaml string)
          & '$'                      " end of line or end of yaml string
          IN SECTION OFFSET offset OF yaml
-         MATCH LENGTH DATA(length).
+         SUBMATCHES result.
+*         MATCH LENGTH DATA(length).
 *         RESULTS DATA(match).
     IF sy-subrc <> 0.
       " Unexpected
       RAISE EXCEPTION TYPE zcx_yamljson.
     ENDIF.
-    result = result && substring( val = yaml
-                                  off = offset
-                                  len = length ).
+*    result = substring( val = yaml
+*                        off = offset
+*                        len = length ).
   ENDMETHOD.
 
   METHOD get_string_inside_double_quote.
@@ -523,8 +562,8 @@ CLASS zcl_yamljson_yaml_lexer IMPLEMENTATION.
 
       DATA(current_value) = " VALUE ty_ref_to_value( ).
       get_next_value( EXPORTING start_column_number = start_column_number + 2
-                             lines               = lines
-                   CHANGING  current_line_number = current_line_number ).
+                                lines               = lines
+                      CHANGING  current_line_number = current_line_number ).
 *                             current_value       = current_value ).
 
       array->append_item( current_value ).
@@ -591,9 +630,9 @@ CLASS zcl_yamljson_yaml_lexer IMPLEMENTATION.
       " ARRAY ITEM being itself an array or object
       current_value = zcl_yamljson_array=>create( ).
       get_next_array( EXPORTING start_column_number = start_column_number
-                             lines               = lines
-                             array               = CAST #( current_value )
-                   CHANGING  current_line_number = current_line_number ).
+                                lines               = lines
+                                array               = CAST #( current_value )
+                      CHANGING  current_line_number = current_line_number ).
 
     ELSEIF line_from_starting_column CS `: `.
       " OBJECT PROPERTY whose value is an array or object starting from the next line
@@ -601,9 +640,9 @@ CLASS zcl_yamljson_yaml_lexer IMPLEMENTATION.
       " TODO: variable is assigned but never used (ABAP cleaner)
       DATA(property_value_start_next_line) = xsdbool( line_from_starting_column CP `*:` ).
       get_next_object( EXPORTING start_column_number = start_column_number
-                              lines               = lines
-                              object              = CAST #( current_value )
-                    CHANGING  current_line_number = current_line_number ).
+                                 lines               = lines
+                                 object              = CAST #( current_value )
+                       CHANGING  current_line_number = current_line_number ).
 
     ELSE.
       IF line_from_starting_column CP `'*'`.

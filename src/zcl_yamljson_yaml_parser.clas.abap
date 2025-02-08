@@ -12,16 +12,22 @@ ENDCLASS.
 
 CLASS zcl_yamljson_yaml_parser IMPLEMENTATION.
   METHOD parse.
-*    result = new zcl_yamljson( ).
-
     WHILE yaml_lexer->is_token_available( ).
-      " TODO: variable is assigned but never used (ABAP cleaner)
-      DATA(json_token) = yaml_lexer->get_next_token( ).
 
-      IF result IS NOT BOUND.
-*        result = NEW zcl_yamljson( ).
-*        result->value = VALUE ty_ref_to_value( ).
-      ENDIF.
+      DATA(yaml_token) = yaml_lexer->get_next_token( ).
+
+      CASE yaml_token-type.
+        WHEN yaml_lexer->token_type-false.
+          result = zcl_yamljson_boolean=>create( abap_false ).
+        WHEN yaml_lexer->token_type-null.
+          result = zcl_yamljson_null=>create( ).
+        WHEN yaml_lexer->token_type-number.
+          result = zcl_yamljson_number=>create( EXACT decfloat34( yaml_token-value ) ).
+        WHEN yaml_lexer->token_type-string.
+          result = zcl_yamljson_string=>create( yaml_token-value ).
+        WHEN yaml_lexer->token_type-true.
+          result = zcl_yamljson_boolean=>create( abap_true ).
+      ENDCASE.
     ENDWHILE.
   ENDMETHOD.
 ENDCLASS.
